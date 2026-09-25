@@ -8,7 +8,7 @@ repository = "https://github.com/SirToffski/zed_csv_utils"
 
 # csv-lsp is downloaded from this repository's GitHub releases.
 capabilities = [
-    { kind = "download-file", host = "github.com", path_prefix = "SirToffski/zed_csv_utils" },
+    { kind = "download_file", host = "github.com", path = ["SirToffski", "zed_csv_utils", "**"] },
 ]
 
 [grammars.csv]
