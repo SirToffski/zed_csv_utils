@@ -29,10 +29,14 @@ jobs:
           - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
           - { target: x86_64-apple-darwin, os: macos-latest }
           - { target: aarch64-apple-darwin, os: macos-latest }
-          - { target: x86_64-pc-windows-msvc, os: windows-latest }
-          - { target: aarch64-pc-windows-msvc, os: windows-latest }
+          # crt-static: link the C runtime into the exe so it doesn't need
+          # vcruntime140.dll (the VC++ redistributable) on the user's machine.
+          - { target: x86_64-pc-windows-msvc, os: windows-latest, rustflags: "-C target-feature=+crt-static" }
+          - { target: aarch64-pc-windows-msvc, os: windows-latest, rustflags: "-C target-feature=+crt-static" }
     runs-on: ${{ matrix.os }}
     env:
+      # Empty for targets that don't set `rustflags` in the matrix.
+      RUSTFLAGS: ${{ matrix.rustflags }}
       # Release tuning for the server binary only; set here rather than in
       # Cargo.toml so the extension's own wasm build is unaffected.
       CARGO_PROFILE_RELEASE_LTO: "true"
