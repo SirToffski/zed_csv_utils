@@ -6,6 +6,11 @@ authors = ["SirToffski <47118864+SirToffski@users.noreply.github.com>"]
 description = "Rainbow highlight for CSV/TSV plus Align/Shrink via language server (code actions + inlay hints). Combines zed-rainbow-csv highlighting with vscode_rainbow_csv align logic."
 repository = "https://github.com/SirToffski/zed_csv_utils"
 
+# csv-lsp is downloaded from this repository's GitHub releases.
+capabilities = [
+    { kind = "download-file", host = "github.com", path_prefix = "SirToffski/zed_csv_utils" },
+]
+
 [grammars.csv]
 repository = "https://github.com/coroa/rainbow-csv-tree-sitter"
 commit = "d82f436727f74298bd587ee696dca903efc42ce6"

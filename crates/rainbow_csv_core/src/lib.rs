@@ -239,6 +239,7 @@ fn parse_quoted_at(src: &str, start: usize, dlm: char) -> Option<(String, usize)
     None
 }
 
+/// Cell width used for alignment. This does not model editor tab stops.
 pub fn display_width(s: &str) -> usize {
     UnicodeWidthStr::width(s)
 }
@@ -256,7 +257,11 @@ pub struct DocAnalysis {
     pub records: Vec<Vec<String>>,
     /// UTF-16 end offset of each raw field in its (CR-stripped) line.
     pub end_cols: Vec<Vec<u32>>,
-    /// Max display width per column.
+    /// Display width of each raw field per line, including surrounding whitespace.
+    pub raw_widths: Vec<Vec<usize>>,
+    /// Max raw display width per column, used as the virtual-align target.
+    pub raw_width_targets: Vec<usize>,
+    /// Max display width of trimmed field values per column, used by Align.
     pub widths: Vec<usize>,
     /// True if any line has unbalanced quotes (incl. multiline records).
     /// Such documents must not be reflowed.
@@ -272,6 +277,8 @@ pub fn analyze_document(text: &str, dialect: Dialect) -> DocAnalysis {
     let lines: Vec<&str> = text.split('\n').collect();
     let mut records = Vec::new();
     let mut end_cols = Vec::new();
+    let mut raw_widths = Vec::new();
+    let mut raw_width_targets: Vec<usize> = Vec::new();
     let mut has_warnings = false;
     let mut needs_shrink = false;
     for (idx, line) in lines.iter().enumerate() {
@@ -284,13 +291,22 @@ pub fn analyze_document(text: &str, dialect: Dialect) -> DocAnalysis {
         has_warnings = has_warnings || warning;
         let mut record = Vec::with_capacity(fields.len());
         let mut cols = Vec::with_capacity(fields.len());
-        for f in &fields {
-            needs_shrink = needs_shrink || stripped[f.start..f.end] != f.value;
+        let mut row_raw_widths = Vec::with_capacity(fields.len());
+        for (i, f) in fields.iter().enumerate() {
+            let raw = &stripped[f.start..f.end];
+            let raw_width = display_width(raw);
+            needs_shrink = needs_shrink || raw != f.value;
+            if raw_width_targets.len() <= i {
+                raw_width_targets.push(0);
+            }
+            raw_width_targets[i] = raw_width_targets[i].max(raw_width);
             record.push(f.value.clone());
             cols.push(utf16_len(&stripped[..f.end]) as u32);
+            row_raw_widths.push(raw_width);
         }
         records.push(record);
         end_cols.push(cols);
+        raw_widths.push(row_raw_widths);
     }
     let mut widths: Vec<usize> = Vec::new();
     for rec in &records {
@@ -316,6 +332,8 @@ pub fn analyze_document(text: &str, dialect: Dialect) -> DocAnalysis {
     DocAnalysis {
         records,
         end_cols,
+        raw_widths,
+        raw_width_targets,
         widths,
         has_warnings,
         needs_align,
@@ -427,18 +445,22 @@ pub struct VirtualPad {
 pub fn pads_for_range(analysis: &DocAnalysis, start_line: u32, end_line: u32) -> Vec<VirtualPad> {
     let mut pads = Vec::new();
     for (lnum, rec) in analysis.records.iter().enumerate() {
+        let lnum_index = lnum;
         let lnum = lnum as u32;
         if lnum < start_line || lnum > end_line {
             continue;
         }
-        for (i, f) in rec.iter().enumerate() {
+        let raw_widths = &analysis.raw_widths[lnum_index];
+        debug_assert_eq!(raw_widths.len(), rec.len());
+        debug_assert_eq!(analysis.end_cols[lnum_index].len(), rec.len());
+        for (i, raw_width) in raw_widths.iter().enumerate() {
             let is_last = i + 1 == rec.len();
             if !is_last {
-                let pad = analysis.widths[i].saturating_sub(display_width(f));
+                let pad = analysis.raw_width_targets[i].saturating_sub(*raw_width);
                 if pad > 0 {
                     pads.push(VirtualPad {
                         line: lnum,
-                        col: analysis.end_cols[lnum as usize][i],
+                        col: analysis.end_cols[lnum_index][i],
                         spaces: pad,
                     });
                 }
@@ -612,15 +634,31 @@ mod tests {
     fn pads_anchor_after_existing_whitespace() {
         // `a  ,b`: hint must go after the raw field end (col 3), not after `a`.
         let analysis = analyze_document("a  ,b\ncccc,d\n", Dialect::Csv);
+        assert_eq!(analysis.raw_widths, vec![vec![3, 1], vec![4, 1]]);
+        assert_eq!(analysis.raw_width_targets, vec![4, 1]);
         let pads = pads_for_range(&analysis, 0, 0);
         assert_eq!(
             pads,
             vec![VirtualPad {
                 line: 0,
                 col: 3,
-                spaces: 3
+                spaces: 1
             }]
         );
+    }
+
+    #[test]
+    fn aligned_document_has_no_virtual_pads() {
+        let aligned = align_document("x,y\nxxxxxx,z\n", Dialect::Csv);
+        assert_eq!(aligned, "x     ,y\nxxxxxx,z\n");
+        assert!(virtual_pads(&aligned, Dialect::Csv).is_empty());
+    }
+
+    #[test]
+    fn quoted_aligned_document_has_no_virtual_pads() {
+        let aligned = align_document("a,\"x\",z\nlong,\"bb\",q\n", Dialect::Csv);
+        assert_eq!(aligned, "a   ,\"x\" ,z\nlong,\"bb\",q\n");
+        assert!(virtual_pads(&aligned, Dialect::Csv).is_empty());
     }
 
     #[test]
@@ -661,16 +699,26 @@ mod tests {
             prop::string::string_regex("[A-Za-z0-9 ,.\"'éü]{0,12}").unwrap()
         }
 
+        fn render_field(field: &str, delim: char) -> String {
+            if field.contains(delim) || field.contains('"') {
+                format!("\"{}\"", field.replace('"', "\"\""))
+            } else {
+                field.to_owned()
+            }
+        }
+
         fn render_quoted(fields: &[String], delim: char) -> String {
             fields
                 .iter()
-                .map(|f| {
-                    if f.contains(delim) || f.contains('"') {
-                        format!("\"{}\"", f.replace('"', "\"\""))
-                    } else {
-                        f.clone()
-                    }
-                })
+                .map(|f| render_field(f, delim))
+                .collect::<Vec<_>>()
+                .join(&delim.to_string())
+        }
+
+        fn render_padded(fields: &[String], delim: char) -> String {
+            fields
+                .iter()
+                .map(|f| format!("  {}  ", render_field(f, delim)))
                 .collect::<Vec<_>>()
                 .join(&delim.to_string())
         }
@@ -703,6 +751,55 @@ mod tests {
                 let shrink_once = shrink_document(&once, Dialect::Tsv).0;
                 let shrink_orig = shrink_document(&text, Dialect::Tsv).0;
                 prop_assert_eq!(shrink_once, shrink_orig);
+            }
+
+            #[test]
+            fn virtual_pads_align_ragged_rows(
+                rows in prop::collection::vec(prop::collection::vec(csv_field(), 2..6), 1..20)
+            ) {
+                let text = rows
+                    .iter()
+                    .map(|r| render_padded(r, ','))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let analysis = analyze_document(&text, Dialect::Csv);
+                prop_assert!(!analysis.has_warnings, "generated well-formed csv warned");
+                let pads = pads_for_range(&analysis, 0, u32::MAX);
+                let mut delimiter_columns: Vec<Option<usize>> = Vec::new();
+
+                for (line_num, line) in text.split('\n').enumerate() {
+                    let (fields, warning) = split_line_spans(line, Dialect::Csv);
+                    prop_assert!(!warning, "generated well-formed csv warned");
+                    let mut display_col = 0usize;
+                    for (i, field) in fields.iter().enumerate() {
+                        let pad = pads
+                            .iter()
+                            .find(|pad| {
+                                pad.line == line_num as u32
+                                    && pad.col == utf16_len(&line[..field.end]) as u32
+                            })
+                            .map_or(0, |pad| pad.spaces);
+                        display_col += display_width(&line[field.start..field.end]) + pad;
+
+                        if i + 1 < fields.len() {
+                            if delimiter_columns.len() <= i {
+                                delimiter_columns.resize(i + 1, None);
+                            }
+                            if let Some(previous) = delimiter_columns[i] {
+                                prop_assert_eq!(
+                                    previous,
+                                    display_col,
+                                    "delimiter column {} differs on line {}",
+                                    i,
+                                    line_num
+                                );
+                            } else {
+                                delimiter_columns[i] = Some(display_col);
+                            }
+                            display_col += display_width(",");
+                        }
+                    }
+                }
             }
         }
     }

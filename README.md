@@ -17,6 +17,30 @@ directly, so both modes go through LSP:
 Documents with unbalanced quotes (including multiline quoted records) are
 never reflowed: Align/Shrink return no edits for them.
 
+## Installation
+
+Install **Rainbow CSV with Align** from Zed's extension page. On first use the
+extension downloads the `csv-lsp` language server for your platform from this
+repository's GitHub releases and keeps it up to date. Supported: Linux, macOS
+and Windows on x86_64 and aarch64.
+
+To use your own build instead, either put `csv-lsp` on your `PATH`, or point
+Zed at it in `settings.json`:
+
+```json
+{
+  "lsp": {
+    "csv-lsp": {
+      "binary": { "path": "/absolute/path/to/csv-lsp" }
+    }
+  }
+}
+```
+
+If you also have the original Rainbow CSV extension installed, both claim
+`.csv`/`.tsv`. Pick one with Zed's `file_types` setting, e.g.
+`"file_types": { "Rainbow CSV Align (,)": ["csv"] }`.
+
 ## Build
 
 Prerequisites per OS: see `docs/setup.md`. Then:
@@ -33,7 +57,7 @@ Binaries: `target/debug/csv-lsp(.exe)`, `target/debug/csv-align(.exe)`,
 `target/wasm32-wasip2/debug/zed_csv_align.wasm`. CI (`.github/workflows/ci.yml`)
 runs fmt, clippy, tests, and the wasm build on Ubuntu, Windows, and macOS.
 
-## Use in Zed (dev extension)
+## Development: use as a dev extension
 
 1. Add the directory containing the built `csv-lsp` binary (e.g.
    `target/debug`) to `PATH` — the extension resolves it via
@@ -80,15 +104,17 @@ risking corruption.
 - `crates/rainbow_csv_core` — dialect detection, span-tracked quoted/simple
   split (port of `csv_utils.js:split_quoted_str`, extended to tolerate
   whitespace around quoted fields), single-pass `analyze_document`
-  (records, widths, warning/needs flags), `align_document`,
+  (records, trimmed/raw widths, warning/needs flags), `align_document`,
   `shrink_document`, range-limited `pads_for_range` (port of
   `rainbow_utils.js` column stats / align / shrink / inlay computation).
-  Property tests assert align idempotency and shrink stability.
+  Property tests assert align idempotency, shrink stability, and virtual
+  delimiter alignment.
 - `crates/csv_lsp` — `csv-lsp` (LSP: codeAction + resolve, inlayHint) +
   `csv-align` CLI. Open docs are cached per sync; list-time action gating is
   O(1), edits compute on resolve.
 - `src/lib.rs` + root `Cargo.toml` — the extension WASM package itself
-  (`zed_extension_api 0.7.0`) launching `csv-lsp` from `PATH`. The root
+  (`zed_extension_api 0.7.0`). Resolves `csv-lsp` from settings, then
+  `PATH`, then downloads it from GitHub releases. The root
   doubles as workspace root; `default-members = ["."]` so Zed's plain
   `cargo build --target wasm32-wasip2` only builds this package.
 - `samples/` — copied from upstream for manual testing, plus `vgsales.csv`
@@ -100,10 +126,23 @@ risking corruption.
 - Single-line records only; unbalanced-quote lines and multiline records are
   refused, never reflowed.
 - No comment-prefix, dynamic separator, or whitespace-dialect support.
+- Virtual alignment uses display widths and does not model editor tab stops;
+  CSV fields containing tabs may be visually misaligned.
 - All columns left-aligned (no decimal-point numeric alignment yet).
 - Non-UTF8 files: CLI decodes lossily; LSP path is UTF-8 (JSON).
-- Publishing (prebuilt per-OS binaries via `download_file`) not wired yet;
-  dev flow expects `csv-lsp` on `PATH`.
+
+## Releasing
+
+1. Bump `version` in `extension.toml` (and the crate versions, to keep them in
+   step), commit, and push.
+2. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`.
+3. `.github/workflows/release.yml` builds `csv-lsp` for all six targets and
+   publishes the GitHub release only once every build has succeeded. It
+   refuses tags that don't match `extension.toml`.
+4. After the release is live, open the PR against `zed-industries/extensions`.
+
+To test the builds without releasing, run the workflow manually from the
+Actions tab.
 
 ## Attribution
 
