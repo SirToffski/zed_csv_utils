@@ -1,0 +1,17 @@
+[package]
+name = "zed-csv-align"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+zed_extension_api = "0.6.0"
+
+[workspace]
+members = ["crates/csv_core", "crates/csv_lsp"]
+# Zed builds the extension with plain `cargo build --target wasm32-wasip2`
+# in this dir, so default builds must only cover the extension package itself.
+# The language-server crates are built explicitly with `-p csv_lsp`.
+default-members = ["."]

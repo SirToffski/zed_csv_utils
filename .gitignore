@@ -1,0 +1,9 @@
+/target
+*.pdb
+.zed/tasks.json.local
+# Zed dev-install build outputs (extension builder clones grammars + writes wasm)
+/grammars/
+/extension.wasm
+# Zed dev-install build outputs (extension builder clones grammars + writes wasm)
+/grammars/
+/extension.wasm

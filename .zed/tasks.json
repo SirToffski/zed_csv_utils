@@ -1,0 +1,19 @@
+[
+  // CLI fallback: no LSP/dev-extension needed.
+  // Build once: cargo build -p csv_lsp
+  // Run via command palette: task: spawn
+  {
+    "label": "CSV: align current file (spaces)",
+    "command": "cargo",
+    "args": ["run", "--quiet", "-p", "csv_lsp", "--bin", "csv-align", "--", "align", "$ZED_FILE", "--in-place"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "hide": "on_success"
+  },
+  {
+    "label": "CSV: shrink current file (trim)",
+    "command": "cargo",
+    "args": ["run", "--quiet", "-p", "csv_lsp", "--bin", "csv-align", "--", "shrink", "$ZED_FILE", "--in-place"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "hide": "on_success"
+  }
+]
