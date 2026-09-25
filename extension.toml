@@ -2,9 +2,9 @@ id = "rainbow-csv-align"
 name = "Rainbow CSV with Align"
 version = "0.1.0"
 schema_version = 1
-authors = ["zed_csv contributors"]
-description = "Rainbow highlight for CSV/TSV plus Align/Shrink via language server (formatting + inlay hints). Combines zed-rainbow-csv highlighting with vscode_rainbow_csv align logic."
-repository = "https://github.com/Kalmaegi/zed-rainbow-csv"
+authors = ["SirToffski <47118864+SirToffski@users.noreply.github.com>"]
+description = "Rainbow highlight for CSV/TSV plus Align/Shrink via language server (code actions + inlay hints). Combines zed-rainbow-csv highlighting with vscode_rainbow_csv align logic."
+repository = "https://github.com/SirToffski/zed_csv_utils"
 
 [grammars.csv]
 repository = "https://github.com/coroa/rainbow-csv-tree-sitter"
@@ -28,4 +28,10 @@ path = "psv"
 
 [language_servers.csv-lsp]
 name = "CSV Align LSP"
-languages = ["Rainbow CSV (,)", "Rainbow TSV (⭲)", "Rainbow CSV (;)", "Rainbow CSV (|)"]
+languages = ["Rainbow CSV Align (,)", "Rainbow TSV Align (⭲)", "Rainbow CSV Align (;)", "Rainbow CSV Align (|)"]
+
+[language_servers.csv-lsp.language_ids]
+"Rainbow CSV Align (,)" = "csv"
+"Rainbow TSV Align (⭲)" = "tsv"
+"Rainbow CSV Align (;)" = "csv-semicolon"
+"Rainbow CSV Align (|)" = "csv-pipe"

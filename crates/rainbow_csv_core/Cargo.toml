@@ -1,7 +1,10 @@
 [package]
-name = "csv_core"
+name = "rainbow_csv_core"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 unicode-width = "0.1"
+
+[dev-dependencies]
+proptest = "1"

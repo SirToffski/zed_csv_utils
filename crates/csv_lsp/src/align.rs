@@ -1,12 +1,15 @@
 //! `csv-align` CLI fallback for Zed Tasks (no LSP needed).
 //! Usage: `csv-align align|shrink <file.csv|file.tsv> [--in-place]`
 //! Prints to stdout unless `--in-place` is given.
+//!
+//! Refuses documents with unbalanced quotes or multiline records: reflowing
+//! those would corrupt data. See `rainbow_csv_core` docs.
 
 use std::env;
 use std::fs;
 use std::path::Path;
 
-use csv_core::Dialect;
+use rainbow_csv_core::Dialect;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -25,9 +28,13 @@ fn main() {
     // VS Code extension's binary/latin-1 handling.
     let text = String::from_utf8_lossy(&bytes).into_owned();
     let dialect = dialect_for_file(file);
+    if rainbow_csv_core::analyze_document(&text, dialect).has_warnings {
+        eprintln!("refusing {mode} on {file}: unbalanced quotes or multiline records");
+        std::process::exit(1);
+    }
     let out = match mode {
-        "align" => csv_core::align_document(&text, dialect),
-        "shrink" => csv_core::shrink_document(&text, dialect).0,
+        "align" => rainbow_csv_core::align_document(&text, dialect),
+        "shrink" => rainbow_csv_core::shrink_document(&text, dialect).0,
         _ => {
             eprintln!("unknown mode {mode:?}, want align|shrink");
             std::process::exit(2);
@@ -44,6 +51,9 @@ fn main() {
 }
 
 fn dialect_for_file(file: &str) -> Dialect {
-    let ext = Path::new(file).extension().and_then(|s| s.to_str()).unwrap_or("");
+    let ext = Path::new(file)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
     Dialect::from_extension(ext).unwrap_or(Dialect::Csv)
 }
