@@ -20,7 +20,7 @@ const SERVER_NAME: &str = "csv-lsp";
 /// Downloaded releases live in `csv-lsp-<tag>/` inside the work directory.
 const VERSION_DIR_PREFIX: &str = "csv-lsp-";
 
-struct RainbowCsvAlign {
+struct CsvColumns {
     /// Downloaded binary resolved earlier in this session.
     cached_binary_path: Option<String>,
 }
@@ -87,7 +87,7 @@ fn set_status(id: &LanguageServerId, status: LanguageServerInstallationStatus) {
     zed::set_language_server_installation_status(id, &status);
 }
 
-impl RainbowCsvAlign {
+impl CsvColumns {
     fn downloaded_binary_path(&mut self, id: &LanguageServerId) -> Result<String> {
         if let Some(path) = &self.cached_binary_path {
             if is_file(path) {
@@ -160,7 +160,7 @@ impl RainbowCsvAlign {
     }
 }
 
-impl zed::Extension for RainbowCsvAlign {
+impl zed::Extension for CsvColumns {
     fn new() -> Self {
         Self {
             cached_binary_path: None,
@@ -204,4 +204,4 @@ impl zed::Extension for RainbowCsvAlign {
     }
 }
 
-zed::register_extension!(RainbowCsvAlign);
+zed::register_extension!(CsvColumns);

@@ -1,6 +1,6 @@
 [package]
 name = "rainbow_csv_core"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 
 [dependencies]

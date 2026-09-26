@@ -60,12 +60,12 @@ impl Dialect {
     /// Map from Zed `languages/*/config.toml` `name` fields (fallback).
     pub fn from_language_name(name: &str) -> Option<Dialect> {
         match name {
-            "Rainbow CSV Align (,)" => Some(Dialect::Csv),
+            "CSV Columns (,)" => Some(Dialect::Csv),
             // The TSV name contains a tab glyph (U+2B72); match by prefix so
             // encoding round-trips can't break detection.
-            n if n.starts_with("Rainbow TSV Align") => Some(Dialect::Tsv),
-            "Rainbow CSV Align (;)" => Some(Dialect::Ssv),
-            "Rainbow CSV Align (|)" => Some(Dialect::Psv),
+            n if n.starts_with("TSV Columns") => Some(Dialect::Tsv),
+            "CSV Columns (;)" => Some(Dialect::Ssv),
+            "CSV Columns (|)" => Some(Dialect::Psv),
             _ => None,
         }
     }
@@ -751,6 +751,51 @@ mod tests {
     fn upstream_sample_parses_without_warnings() {
         let sample = include_str!("../../../samples/sample_csv_file.csv");
         assert!(!analyze_document(sample, Dialect::Csv).has_warnings);
+    }
+
+    #[test]
+    fn usgs_sample_aligns_and_round_trips() {
+        let sample = include_str!("../../../samples/usgs_earthquakes_2025h1.csv");
+        let analysis = analyze_document(sample, Dialect::Csv);
+        assert!(!analysis.has_warnings);
+        assert_eq!(analysis.widths.len(), 22);
+        let aligned = align_document(sample, Dialect::Csv);
+        assert_eq!(shrink_document(&aligned, Dialect::Csv).0, sample);
+    }
+
+    #[test]
+    fn language_names_match_configs_and_manifest() {
+        // Display names live in three places; keep them in step.
+        let manifest = include_str!("../../../extension.toml");
+        for (config, dialect) in [
+            (
+                include_str!("../../../languages/csv/config.toml"),
+                Dialect::Csv,
+            ),
+            (
+                include_str!("../../../languages/tsv/config.toml"),
+                Dialect::Tsv,
+            ),
+            (
+                include_str!("../../../languages/ssv/config.toml"),
+                Dialect::Ssv,
+            ),
+            (
+                include_str!("../../../languages/psv/config.toml"),
+                Dialect::Psv,
+            ),
+        ] {
+            let name = config
+                .lines()
+                .find_map(|l| l.strip_prefix("name = \""))
+                .and_then(|l| l.strip_suffix('"'))
+                .expect("config.toml has a name");
+            assert_eq!(Dialect::from_language_name(name), Some(dialect), "{name}");
+            assert!(
+                manifest.contains(&format!("\"{name}\" = ")),
+                "{name} missing from extension.toml language_ids"
+            );
+        }
     }
 
     #[cfg(test)]

@@ -1,9 +1,11 @@
-# Rainbow CSV with Align (Zed)
+# CSV Columns
 
-Combines [zed-rainbow-csv](https://github.com/Kalmaegi/zed-rainbow-csv) syntax
-highlighting with [vscode_rainbow_csv](https://github.com/mechatroner/vscode_rainbow_csv)
-Align/Shrink, via a small LSP server. Zed extensions cannot edit buffers
-directly, so both modes go through LSP:
+A Zed extension for CSV/TSV files: rainbow column highlighting that stays fast
+on large files (see "Grammar"), plus column alignment. Highlighting builds on
+[zed-rainbow-csv](https://github.com/Kalmaegi/zed-rainbow-csv); Align/Shrink
+follow [vscode_rainbow_csv](https://github.com/mechatroner/vscode_rainbow_csv)
+and run in a small LSP server. Zed extensions cannot edit buffers directly, so
+both alignment modes go through LSP:
 
 - **Whitespace Align / Shrink** (destructive): explicit `source` code actions
   ("Align CSV columns (spaces)", "Shrink CSV columns (trim spaces)"). Edits
@@ -19,7 +21,7 @@ never reflowed: Align/Shrink return no edits for them.
 
 ## Installation
 
-Install **Rainbow CSV with Align** from Zed's extension page. On first use the
+Install **CSV Columns** from Zed's extension page. On first use the
 extension downloads the `csv-lsp` language server for your platform from this
 repository's GitHub releases and keeps it up to date. Supported: Linux, macOS
 and Windows on x86_64 and aarch64.
@@ -37,9 +39,9 @@ Zed at it in `settings.json`:
 }
 ```
 
-If you also have the original Rainbow CSV extension installed, both claim
+If you also have the Rainbow CSV extension installed, both claim
 `.csv`/`.tsv`. Pick one with Zed's `file_types` setting, e.g.
-`"file_types": { "Rainbow CSV Align (,)": ["csv"] }`.
+`"file_types": { "CSV Columns (,)": ["csv"] }`.
 
 ## Build
 
@@ -54,14 +56,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 Binaries: `target/debug/csv-lsp(.exe)`, `target/debug/csv-align(.exe)`,
-`target/wasm32-wasip2/debug/zed_csv_align.wasm`. CI (`.github/workflows/ci.yml`)
+`target/wasm32-wasip2/debug/csv_columns.wasm`. CI (`.github/workflows/ci.yml`)
 runs fmt, clippy, tests, and the wasm build on Ubuntu, Windows, and macOS.
 
 ## Development: use as a dev extension
 
-1. Add the directory containing the built `csv-lsp` binary (e.g.
-   `target/debug`) to `PATH` — the extension resolves it via
-   `worktree.which("csv-lsp")`.
+1. Build the server with `cargo build --release -p csv_lsp` and add
+   `target/release` to `PATH` — the extension resolves it via
+   `worktree.which("csv-lsp")`, ahead of the downloaded release. Avoid
+   `target/debug` here: debug builds are several times slower on large files.
 2. Zed command palette: `zed: extensions` -> `Install Dev Extension` ->
    pick this directory.
 3. Open a `.csv` / `.tsv` file. Highlighting comes from the tree-sitter
@@ -95,8 +98,8 @@ risking corruption.
 ## Layout
 
 - `extension.toml` — grammar pins + `csv-lsp` language server for
-  the 4 Rainbow languages (renamed with an `Align` suffix so they don't clash
-  with the existing Rainbow CSV extension). Language `name`s must match
+  the 4 languages (named "CSV Columns (,)" etc. so they don't clash with the
+  Rainbow CSV extension's languages). Language `name`s must match
   `languages/*/config.toml`; `language_ids` fixes the LSP `languageId`
   explicitly instead of relying on display names.
 - `grammar/` — the Tree-sitter grammars (`csv`, `ssv`, `psv`, `tsv`), all
@@ -108,21 +111,22 @@ risking corruption.
 - `crates/rainbow_csv_core` — dialect detection, span-tracked quoted/simple
   split (port of `csv_utils.js:split_quoted_str`, extended to tolerate
   whitespace around quoted fields), single-pass `analyze_document`
-  (records, trimmed/raw widths, warning/needs flags), `align_document`,
+  (flat per-field widths and UTF-16 columns, warning/needs flags), `align_document`,
   `shrink_document`, range-limited `pads_for_range` (port of
   `rainbow_utils.js` column stats / align / shrink / inlay computation).
   Property tests assert align idempotency, shrink stability, and virtual
   delimiter alignment.
 - `crates/csv_lsp` — `csv-lsp` (LSP: codeAction + resolve, inlayHint) +
-  `csv-align` CLI. Open docs are cached per sync; list-time action gating is
-  O(1), edits compute on resolve.
+  `csv-align` CLI. Analysis is lazy (at most once per text version, on the
+  first request after edits); edits compute on resolve.
 - `src/lib.rs` + root `Cargo.toml` — the extension WASM package itself
   (`zed_extension_api 0.7.0`). Resolves `csv-lsp` from settings, then
   `PATH`, then downloads it from GitHub releases. The root
   doubles as workspace root; `default-members = ["."]` so Zed's plain
   `cargo build --target wasm32-wasip2` only builds this package.
-- `samples/` — copied from upstream for manual testing, plus `vgsales.csv`
-  (public Kaggle data, 16.5k rows).
+- `samples/` — copied from upstream for manual testing, plus
+  `usgs_earthquakes_2025h1.csv` (13.4k rows, 22 columns, many quoted fields;
+  U.S. public domain, see `THIRD_PARTY_NOTICES.md`) for large-file testing.
 - `docs/setup.md` — per-OS dependency setup.
 
 ## Limits
@@ -165,7 +169,7 @@ from a Git commit, not from the working tree.
 
 1. Bump `version` in `extension.toml` (and the crate versions, to keep them in
    step), commit, and push.
-2. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`.
+2. Tag and push, e.g. `git tag v0.1.6 && git push origin v0.1.6`.
 3. `.github/workflows/release.yml` builds `csv-lsp` for all six targets and
    publishes the GitHub release only once every build has succeeded. It
    refuses tags that don't match `extension.toml`.
@@ -176,10 +180,11 @@ Actions tab.
 
 ## Attribution
 
-This extension combines work from two MIT-licensed projects:
+This extension builds on two MIT-licensed projects; their license texts are
+in `THIRD_PARTY_NOTICES.md`.
 
 - Syntax highlighting queries, language configs (`languages/*/config.toml`,
-  `highlights.scm`), and `samples/` (except `vgsales.csv`)
+  `highlights.scm`), and `samples/` (except the USGS file)
   come from [Kalmaegi/zed-rainbow-csv](https://github.com/Kalmaegi/zed-rainbow-csv)
   (MIT, Copyright (c) 2024 Hans). Language display names were changed to
   avoid clashing with that extension in Zed.
@@ -188,7 +193,7 @@ This extension combines work from two MIT-licensed projects:
   (MIT, Copyright (c) 2017 Dmitry Ignatovich) — specifically the quoted-field
   splitter (`rbql_core/rbql-js/csv_utils.js`) and the column-stat / align /
   shrink / inlay-hint computation (`rainbow_utils.js`). No VS Code source
-  files are vendored; the implementation here is a clean-room port.
+  files are vendored; the logic was reimplemented in Rust.
 - The Tree-sitter grammars in `grammar/` were written for this extension,
   following the structure and node naming of
   [coroa/rainbow-csv-tree-sitter](https://github.com/coroa/rainbow-csv-tree-sitter)

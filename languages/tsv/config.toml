@@ -1,3 +1,3 @@
-name = "Rainbow TSV Align (⭲)"
+name = "TSV Columns (⭲)"
 grammar = "tsv"
 path_suffixes = ["tsv"]
