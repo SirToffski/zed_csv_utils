@@ -91,7 +91,7 @@ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
 name = "csv_lsp"
-version = "0.1.0"
+version = "0.1.5"
 dependencies = [
  "lsp-server",
  "lsp-types",
@@ -608,7 +608,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rainbow_csv_core"
-version = "0.1.0"
+version = "0.1.5"
 dependencies = [
  "proptest",
  "unicode-width",
@@ -1096,7 +1096,7 @@ dependencies = [
 
 [[package]]
 name = "zed-csv-align"
-version = "0.1.0"
+version = "0.1.5"
 dependencies = [
  "zed_extension_api",
 ]
