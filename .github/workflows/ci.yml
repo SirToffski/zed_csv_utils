@@ -19,3 +19,19 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: cargo build --target wasm32-wasip2
+
+  grammar:
+    # The committed parsers must match grammar/common/define-grammar.js.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Regenerate and test every dialect
+        working-directory: grammar
+        run: |
+          for g in csv ssv psv tsv; do
+            (cd "$g" && npx --yes tree-sitter-cli@0.25.8 generate && npx --yes tree-sitter-cli@0.25.8 test)
+          done
+      - run: git diff --exit-code -- grammar

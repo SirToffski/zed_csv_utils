@@ -8,11 +8,16 @@
 //! - `textDocument/inlayHint` -> virtual-align pads from a per-version cache,
 //!   served for the requested range only.
 //!
+//! Document analysis is lazy: `didChange` only stores the text, and the first
+//! request that needs the analysis computes it. A burst of keystrokes thus
+//! costs one analysis instead of one per change.
+//!
 //! Dialect comes from the LSP `languageId` (mapped explicitly in
 //! `extension.toml`), falling back to language name and file extension.
 
 use std::collections::HashMap;
 use std::error::Error;
+use std::sync::OnceLock;
 
 use lsp_server::{Connection, Message, Request, RequestId, Response};
 use lsp_types::*;
@@ -20,9 +25,12 @@ use rainbow_csv_core::{align_document, pads_for_range, shrink_document, Dialect,
 use serde_json::json;
 
 fn verbose() -> bool {
-    std::env::var("CSV_LSP_VERBOSE")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    static VERBOSE: OnceLock<bool> = OnceLock::new();
+    *VERBOSE.get_or_init(|| {
+        std::env::var("CSV_LSP_VERBOSE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
 }
 
 fn dialect_for(language_id: &str, uri: &Url) -> Dialect {
@@ -86,30 +94,36 @@ fn shrink_edit(text: &str, dialect: Dialect) -> Option<Vec<TextEdit>> {
     }])
 }
 
-/// Per-document state, parsed once per sync. Inlay hints and the cheap
-/// list-time action gating both read this cache.
+/// Per-document state. Inlay hints and the cheap list-time action gating
+/// both read the analysis, which is computed at most once per text version.
 struct DocState {
-    language_id: String,
     text: String,
     dialect: Dialect,
-    analysis: DocAnalysis,
+    analysis: Option<DocAnalysis>,
 }
 
 impl DocState {
-    fn new(language_id: String, text: String, uri: &Url) -> Self {
-        let dialect = dialect_for(&language_id, uri);
-        let analysis = rainbow_csv_core::analyze_document(&text, dialect);
+    fn new(language_id: &str, text: String, uri: &Url) -> Self {
         Self {
-            language_id,
             text,
-            dialect,
-            analysis,
+            dialect: dialect_for(language_id, uri),
+            analysis: None,
         }
     }
 
+    fn set_text(&mut self, text: String) {
+        self.text = text;
+        self.analysis = None;
+    }
+
+    fn analysis(&mut self) -> &DocAnalysis {
+        self.analysis
+            .get_or_insert_with(|| rainbow_csv_core::analyze_document(&self.text, self.dialect))
+    }
+
     /// Whether offering Align/Shrink is safe: no unbalanced quotes.
-    fn editable(&self) -> bool {
-        !self.analysis.has_warnings
+    fn editable(&mut self) -> bool {
+        !self.analysis().has_warnings
     }
 }
 
@@ -184,24 +198,23 @@ fn handle_notification(note: lsp_server::Notification, docs: &mut HashMap<Url, D
         "textDocument/didOpen" => {
             if let Ok(p) = serde_json::from_value::<DidOpenTextDocumentParams>(note.params) {
                 let doc = p.text_document;
-                docs.insert(
-                    doc.uri.clone(),
-                    DocState::new(doc.language_id, doc.text, &doc.uri),
-                );
+                let state = DocState::new(&doc.language_id, doc.text, &doc.uri);
+                docs.insert(doc.uri, state);
             }
         }
         "textDocument/didChange" => {
-            // FULL sync: single entry with the whole text. Rebuild the cache.
+            // FULL sync: the last entry holds the whole text. Analysis is
+            // deferred to the next request that needs it.
             if let Ok(p) = serde_json::from_value::<DidChangeTextDocumentParams>(note.params) {
                 if let Some(last) = p.content_changes.into_iter().last() {
-                    let lang = docs
-                        .get(&p.text_document.uri)
-                        .map(|s| s.language_id.clone())
-                        .unwrap_or_else(|| String::from("csv"));
-                    docs.insert(
-                        p.text_document.uri.clone(),
-                        DocState::new(lang, last.text, &p.text_document.uri),
-                    );
+                    let uri = p.text_document.uri;
+                    match docs.get_mut(&uri) {
+                        Some(doc) => doc.set_text(last.text),
+                        None => {
+                            let state = DocState::new("csv", last.text, &uri);
+                            docs.insert(uri, state);
+                        }
+                    }
                 }
             }
         }
@@ -238,19 +251,21 @@ fn handle_request(
         "textDocument/codeAction" => {
             let p: CodeActionParams = serde_json::from_value(req.params)?;
             let uri = &p.text_document.uri;
-            // List time is O(1): offer from cached flags, compute edits only
-            // on resolve. Never offer on unbalanced input.
+            // List time reads cached flags (analysis runs at most once per
+            // text version); edits are computed only on resolve. Never offer
+            // on unbalanced input.
             let mut actions: Vec<CodeActionOrCommand> = Vec::new();
-            if let Some(doc) = docs.get(uri) {
-                if doc.editable() {
-                    if doc.analysis.needs_align {
+            if let Some(doc) = docs.get_mut(uri) {
+                let analysis = doc.analysis();
+                if !analysis.has_warnings {
+                    if analysis.needs_align {
                         actions.push(unresolved_action(
                             "Align CSV columns (spaces)",
                             "align",
                             uri,
                         ));
                     }
-                    if doc.analysis.needs_shrink {
+                    if analysis.needs_shrink {
                         actions.push(unresolved_action(
                             "Shrink CSV columns (trim spaces)",
                             "shrink",
@@ -280,7 +295,7 @@ fn handle_request(
                 .and_then(|u| u.as_str())
                 .and_then(|s| s.parse().ok());
             if let Some(uri) = uri {
-                if let Some(doc) = docs.get(&uri) {
+                if let Some(doc) = docs.get_mut(&uri) {
                     if doc.editable() {
                         let edit = match op {
                             "shrink" => shrink_edit(&doc.text, doc.dialect),
@@ -303,10 +318,11 @@ fn handle_request(
             let t0 = std::time::Instant::now();
             let p: InlayHintParams = serde_json::from_value(req.params)?;
             let mut hints = Vec::new();
-            if let Some(doc) = docs.get(&p.text_document.uri) {
-                if doc.editable() {
+            if let Some(doc) = docs.get_mut(&p.text_document.uri) {
+                let analysis = doc.analysis();
+                if !analysis.has_warnings {
                     let range = p.range;
-                    for pad in pads_for_range(&doc.analysis, range.start.line, range.end.line) {
+                    for pad in pads_for_range(analysis, range.start.line, range.end.line) {
                         hints.push(InlayHint {
                             position: Position {
                                 line: pad.line,
@@ -388,19 +404,30 @@ mod tests {
     #[test]
     fn docstate_caches_widths() {
         let uri = Url::parse("file:///C:/t.csv").unwrap();
-        let doc = DocState::new(String::from("csv"), String::from("a,bb\ncccc,d\n"), &uri);
+        let mut doc = DocState::new("csv", String::from("a,bb\ncccc,d\n"), &uri);
         assert_eq!(doc.dialect, Dialect::Csv);
-        assert_eq!(doc.analysis.widths, vec![4, 2]);
-        assert_eq!(doc.analysis.records.len(), 2);
         assert!(doc.editable());
-        assert!(doc.analysis.needs_align);
-        assert!(!doc.analysis.needs_shrink);
+        let analysis = doc.analysis();
+        assert_eq!(analysis.widths, vec![4, 2]);
+        assert_eq!(analysis.line_count(), 2);
+        assert!(analysis.needs_align);
+        assert!(!analysis.needs_shrink);
+    }
+
+    #[test]
+    fn docstate_reanalyzes_after_change() {
+        let uri = Url::parse("file:///C:/t.csv").unwrap();
+        let mut doc = DocState::new("csv", String::from("a,bb\ncccc,d\n"), &uri);
+        assert_eq!(doc.analysis().widths, vec![4, 2]);
+        doc.set_text(String::from("a,b\n"));
+        assert!(doc.analysis.is_none(), "analysis must be deferred");
+        assert_eq!(doc.analysis().widths, vec![1, 1]);
     }
 
     #[test]
     fn docstate_flags_unbalanced() {
         let uri = Url::parse("file:///C:/t.csv").unwrap();
-        let doc = DocState::new(String::from("csv"), String::from("a,b\n1,\"oops,2\n"), &uri);
+        let mut doc = DocState::new("csv", String::from("a,b\n1,\"oops,2\n"), &uri);
         assert!(!doc.editable());
     }
 }

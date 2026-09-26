@@ -4,3 +4,5 @@
 # Zed dev-install build outputs (extension builder clones grammars + writes wasm)
 /grammars/
 /extension.wasm
+# tree-sitter test build outputs (MSVC)
+/grammar/*/parser.*

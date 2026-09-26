@@ -1,8 +1,10 @@
 # Development setup
 
 Machine-agnostic prerequisites. Nothing here is specific to any one computer;
-pick the section for your OS. No Node.js required (the language server is pure
-Rust); Python is optional (only used for ad-hoc throwaway scripts).
+pick the section for your OS. Node.js is only needed to regenerate the
+Tree-sitter grammars in `grammar/` after changing them (see README, "Grammar");
+the language server is pure Rust. Python is optional (only used for ad-hoc
+throwaway scripts).
 
 ## All platforms
 

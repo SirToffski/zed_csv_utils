@@ -92,6 +92,45 @@ pub struct SpannedField {
     pub end: usize,
 }
 
+/// Allocation-free field span: raw `start..end` plus the trimmed value's
+/// `tstart..tend`, all byte offsets into the line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RawField {
+    start: usize,
+    end: usize,
+    tstart: usize,
+    tend: usize,
+}
+
+impl RawField {
+    /// Span whose value is the whitespace-trimmed raw text.
+    fn trimmed(line: &str, start: usize, end: usize) -> Self {
+        let raw = &line[start..end];
+        let lead = raw.len() - raw.trim_start().len();
+        let tend = start + raw.trim_end().len();
+        RawField {
+            start,
+            end,
+            tstart: (start + lead).min(tend),
+            tend,
+        }
+    }
+
+    /// Span whose value is the raw text as-is.
+    fn untrimmed(start: usize, end: usize) -> Self {
+        RawField {
+            start,
+            end,
+            tstart: start,
+            tend: end,
+        }
+    }
+
+    fn is_trimmed(&self) -> bool {
+        self.tstart != self.start || self.tend != self.end
+    }
+}
+
 /// Split one line into trimmed values. Returns `(fields, warning)`.
 /// `warning=true` means unbalanced quotes; the line must not be reflowed.
 pub fn split_line(line: &str, dialect: Dialect) -> (Vec<String>, bool) {
@@ -101,32 +140,49 @@ pub fn split_line(line: &str, dialect: Dialect) -> (Vec<String>, bool) {
 
 /// Split one line, tracking each field's raw span.
 pub fn split_line_spans(line: &str, dialect: Dialect) -> (Vec<SpannedField>, bool) {
-    if !dialect.quoted() {
-        return split_simple_spans(line, dialect.delimiter());
+    let mut raw = Vec::new();
+    let warning = split_raw(line, dialect, &mut raw);
+    let fields = raw
+        .into_iter()
+        .map(|f| SpannedField {
+            value: line[f.tstart..f.tend].to_string(),
+            start: f.start,
+            end: f.end,
+        })
+        .collect();
+    (fields, warning)
+}
+
+/// Split `line` into `out` (cleared first). Returns the unbalanced-quote flag.
+fn split_raw(line: &str, dialect: Dialect, out: &mut Vec<RawField>) -> bool {
+    out.clear();
+    // Every delimiter is ASCII, so byte search can't hit inside a multibyte char.
+    let dlm = dialect.delimiter() as u8;
+    if !dialect.quoted() || !line.as_bytes().contains(&b'"') {
+        split_simple(line, dlm, out);
+        return false;
     }
-    split_quoted_spans(line, dialect.delimiter())
+    split_quoted(line, dlm, out)
 }
 
-fn spanned(value: String, start: usize, end: usize) -> SpannedField {
-    SpannedField { value, start, end }
-}
-
-/// Literal split that records byte offsets. Values are trimmed; spans stay raw.
-fn split_simple_spans(line: &str, delim: char) -> (Vec<SpannedField>, bool) {
-    let mut out = Vec::new();
+/// Literal split. Values are trimmed; spans stay raw.
+fn split_simple(line: &str, dlm: u8, out: &mut Vec<RawField>) {
     let mut start = 0usize;
-    for (idx, ch) in line.char_indices() {
-        if ch == delim {
-            out.push(spanned(line[start..idx].trim().to_string(), start, idx));
-            start = idx + ch.len_utf8();
+    for (idx, &b) in line.as_bytes().iter().enumerate() {
+        if b == dlm {
+            out.push(RawField::trimmed(line, start, idx));
+            start = idx + 1;
         }
     }
-    out.push(spanned(line[start..].trim().to_string(), start, line.len()));
-    (out, false)
+    out.push(RawField::trimmed(line, start, line.len()));
 }
 
 fn is_outer_ws(b: u8) -> bool {
     b == b' ' || b == b'\t'
+}
+
+fn find_byte(bytes: &[u8], from: usize, b: u8) -> Option<usize> {
+    bytes[from..].iter().position(|&x| x == b).map(|p| from + p)
 }
 
 /// Port of `split_quoted_str` in `csv_utils.js`, with one deliberate
@@ -134,13 +190,9 @@ fn is_outer_ws(b: u8) -> bool {
 /// `field_rgx_external_whitespaces`). Whitespace-align pads after the closing
 /// quote, so without this the padded output would mis-parse as unbalanced on
 /// the next pass and corrupt quoted commas.
-fn split_quoted_spans(src: &str, dlm: char) -> (Vec<SpannedField>, bool) {
-    if !src.contains('"') {
-        return split_simple_spans(src, dlm);
-    }
+fn split_quoted(src: &str, dlm: u8, out: &mut Vec<RawField>) -> bool {
     let bytes = src.as_bytes();
     let n = bytes.len();
-    let mut out = Vec::new();
     let mut warning = false;
     let mut i = 0usize;
     while i < n {
@@ -150,69 +202,63 @@ fn split_quoted_spans(src: &str, dlm: char) -> (Vec<SpannedField>, bool) {
             j += 1;
         }
         if j < n && bytes[j] == b'"' {
-            if let Some((_field, close_end)) = parse_quoted_at(src, j, dlm) {
+            if let Some(close_end) = parse_quoted_at(bytes, j, dlm) {
                 let mut k = close_end;
                 while k < n && is_outer_ws(bytes[k]) {
                     k += 1;
                 }
-                if k == n || bytes[k] == dlm as u8 {
-                    out.push(spanned(src[i..k].trim().to_string(), i, k));
-                    i = k;
-                    if i < n && bytes[i] == dlm as u8 {
-                        i += dlm.len_utf8();
-                        if i == n {
-                            out.push(spanned(String::new(), n, n));
-                        }
+                // `parse_quoted_at` guarantees `k == n || bytes[k] == dlm`.
+                out.push(RawField::trimmed(src, i, k));
+                i = k;
+                if i < n {
+                    i += 1;
+                    if i == n {
+                        out.push(RawField::untrimmed(n, n));
                     }
-                    continue;
                 }
+                continue;
             }
             // Unbalanced quote or garbage after it: warn and consume
             // literally up to the next delimiter.
             warning = true;
-            let rest = &src[i..];
-            if let Some(pos) = rest.find(dlm) {
-                let end = i + pos;
-                out.push(spanned(rest[..pos].to_string(), i, end));
-                i = end + dlm.len_utf8();
-                if i == n {
-                    out.push(spanned(String::new(), n, n));
+            match find_byte(bytes, i, dlm) {
+                Some(end) => {
+                    out.push(RawField::untrimmed(i, end));
+                    i = end + 1;
+                    if i == n {
+                        out.push(RawField::untrimmed(n, n));
+                    }
                 }
-            } else {
-                out.push(spanned(rest.to_string(), i, n));
-                i = n;
+                None => {
+                    out.push(RawField::untrimmed(i, n));
+                    i = n;
+                }
             }
             continue;
         }
-        let rest = &src[i..];
-        if let Some(pos) = rest.find(dlm) {
-            let end = i + pos;
-            let text = &src[i..end];
-            warning = warning || text.contains('"');
-            out.push(spanned(text.trim().to_string(), i, end));
-            i = end + dlm.len_utf8();
+        let end = find_byte(bytes, i, dlm).unwrap_or(n);
+        warning = warning || bytes[i..end].contains(&b'"');
+        out.push(RawField::trimmed(src, i, end));
+        i = end;
+        if i < n {
+            i += 1;
             if i == n {
-                out.push(spanned(String::new(), n, n));
+                out.push(RawField::untrimmed(n, n));
             }
-        } else {
-            warning = warning || rest.contains('"');
-            out.push(spanned(rest.trim().to_string(), i, n));
-            i = n;
         }
     }
     if src.is_empty() {
-        out.push(spanned(String::new(), 0, 0));
+        out.push(RawField::untrimmed(0, 0));
     }
-    (out, warning)
+    warning
 }
 
 /// Parse `"..."` starting at byte index `start` (which must be `"`).
-/// Returns `(field_text_with_quotes, next_byte_index_past_closing_quote)`.
-/// The closing quote may be followed by spaces/tabs (whitespace-align pads
-/// there) as long as only the delimiter or end of line comes after; anything
-/// else (e.g. `"a"x`) is rejected as unbalanced.
-fn parse_quoted_at(src: &str, start: usize, dlm: char) -> Option<(String, usize)> {
-    let bytes = src.as_bytes();
+/// Returns the byte index just past the closing quote. The closing quote may
+/// be followed by spaces/tabs (whitespace-align pads there) as long as only
+/// the delimiter or end of line comes after; anything else (e.g. `"a"x`) is
+/// rejected as unbalanced.
+fn parse_quoted_at(bytes: &[u8], start: usize, dlm: u8) -> Option<usize> {
     let n = bytes.len();
     let mut i = start + 1;
     while i < n {
@@ -226,39 +272,56 @@ fn parse_quoted_at(src: &str, start: usize, dlm: char) -> Option<(String, usize)
             while k < n && is_outer_ws(bytes[k]) {
                 k += 1;
             }
-            if k == n || src[k..].starts_with(dlm) {
-                return Some((src[start..end].to_string(), end));
+            if k == n || bytes[k] == dlm {
+                return Some(end);
             }
             return None; // garbage after quote -> unbalanced for our purposes
         }
-        // Advance by one char (quotes/newlines can't appear inside single-line input
-        // except as data, but be correct for multibyte).
-        let ch_len = src[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
-        i += ch_len;
+        // `"` is ASCII, so stepping bytewise through multibyte chars is safe.
+        i += 1;
     }
     None
 }
 
 /// Cell width used for alignment. This does not model editor tab stops.
 pub fn display_width(s: &str) -> usize {
-    UnicodeWidthStr::width(s)
+    // Printable ASCII is one column per byte; skip the Unicode tables.
+    if s.bytes().all(|b| (0x20..0x7f).contains(&b)) {
+        s.len()
+    } else {
+        UnicodeWidthStr::width(s)
+    }
 }
 
 /// Length in UTF-16 code units (LSP `character` offsets are UTF-16).
 pub fn utf16_len(s: &str) -> usize {
-    s.encode_utf16().count()
+    if s.is_ascii() {
+        s.len()
+    } else {
+        s.encode_utf16().count()
+    }
+}
+
+/// Per-field measurements cached by [`analyze_document`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FieldInfo {
+    /// UTF-16 end offset of the raw field in its (CR-stripped) line.
+    pub end_col: u32,
+    /// Display width of the raw field, including surrounding whitespace.
+    pub raw_width: u32,
+    /// Display width of the trimmed field value.
+    pub width: u32,
 }
 
 /// Whole-document parse result. Computed once per document version and shared
-/// by align, shrink, and inlay-hint serving.
+/// by action gating and inlay-hint serving. Stores only measurements (no
+/// field text), in one flat array, so analysis stays cheap on large files.
 #[derive(Debug, Clone)]
 pub struct DocAnalysis {
-    /// Trimmed field values per line.
-    pub records: Vec<Vec<String>>,
-    /// UTF-16 end offset of each raw field in its (CR-stripped) line.
-    pub end_cols: Vec<Vec<u32>>,
-    /// Display width of each raw field per line, including surrounding whitespace.
-    pub raw_widths: Vec<Vec<usize>>,
+    /// Every field of every line, in document order.
+    fields: Vec<FieldInfo>,
+    /// Line `i`'s fields are `fields[line_ends[i - 1]..line_ends[i]]`.
+    line_ends: Vec<usize>,
     /// Max raw display width per column, used as the virtual-align target.
     pub raw_width_targets: Vec<usize>,
     /// Max display width of trimmed field values per column, used by Align.
@@ -272,73 +335,125 @@ pub struct DocAnalysis {
     pub needs_shrink: bool,
 }
 
-/// Parse + measure a document in a single pass.
+impl DocAnalysis {
+    /// Number of records (lines; a trailing newline doesn't start a new one).
+    pub fn line_count(&self) -> usize {
+        self.line_ends.len()
+    }
+
+    /// Fields of record `line`.
+    pub fn line(&self, line: usize) -> &[FieldInfo] {
+        let start = if line == 0 {
+            0
+        } else {
+            self.line_ends[line - 1]
+        };
+        &self.fields[start..self.line_ends[line]]
+    }
+}
+
+/// Lines of `text` without their terminators, paired with the terminator
+/// (`"\n"`, `"\r\n"`, or `""`/`"\r"` for a final unterminated line).
+fn lines_with_endings(text: &str) -> impl Iterator<Item = (&str, &str)> {
+    text.split_inclusive('\n').map(|seg| {
+        if let Some(line) = seg.strip_suffix("\r\n") {
+            (line, "\r\n")
+        } else if let Some(line) = seg.strip_suffix('\n') {
+            (line, "\n")
+        } else if let Some(line) = seg.strip_suffix('\r') {
+            (line, "\r")
+        } else {
+            (seg, "")
+        }
+    })
+}
+
+fn raise(maxes: &mut Vec<usize>, i: usize, value: usize) {
+    if maxes.len() <= i {
+        maxes.resize(i + 1, 0);
+    }
+    maxes[i] = maxes[i].max(value);
+}
+
+/// Parse + measure a document.
 pub fn analyze_document(text: &str, dialect: Dialect) -> DocAnalysis {
-    let lines: Vec<&str> = text.split('\n').collect();
-    let mut records = Vec::new();
-    let mut end_cols = Vec::new();
-    let mut raw_widths = Vec::new();
+    let mut fields = Vec::new();
+    let mut line_ends = Vec::new();
     let mut raw_width_targets: Vec<usize> = Vec::new();
+    let mut widths: Vec<usize> = Vec::new();
     let mut has_warnings = false;
     let mut needs_shrink = false;
-    for (idx, line) in lines.iter().enumerate() {
-        let stripped = line.strip_suffix('\r').unwrap_or(line);
-        // Skip the final artifact of trailing newline.
-        if stripped.is_empty() && idx + 1 == lines.len() && text.ends_with('\n') {
-            continue;
+    let mut raw = Vec::new();
+    // A trailing newline doesn't start another record.
+    let body = text.strip_suffix('\n').unwrap_or(text);
+    for line in body.split('\n') {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        has_warnings |= split_raw(line, dialect, &mut raw);
+        let ascii = line.is_ascii();
+        // UTF-16 column, advanced incrementally from field to field.
+        let (mut col_byte, mut col) = (0usize, 0usize);
+        for (i, f) in raw.iter().enumerate() {
+            let end_col = if ascii {
+                f.end
+            } else {
+                col += utf16_len(&line[col_byte..f.end]);
+                col_byte = f.end;
+                col
+            };
+            let raw_width = display_width(&line[f.start..f.end]);
+            let width = if f.is_trimmed() {
+                needs_shrink = true;
+                display_width(&line[f.tstart..f.tend])
+            } else {
+                raw_width
+            };
+            raise(&mut raw_width_targets, i, raw_width);
+            raise(&mut widths, i, width);
+            fields.push(FieldInfo {
+                end_col: end_col as u32,
+                raw_width: raw_width as u32,
+                width: width as u32,
+            });
         }
-        let (fields, warning) = split_line_spans(stripped, dialect);
-        has_warnings = has_warnings || warning;
-        let mut record = Vec::with_capacity(fields.len());
-        let mut cols = Vec::with_capacity(fields.len());
-        let mut row_raw_widths = Vec::with_capacity(fields.len());
-        for (i, f) in fields.iter().enumerate() {
-            let raw = &stripped[f.start..f.end];
-            let raw_width = display_width(raw);
-            needs_shrink = needs_shrink || raw != f.value;
-            if raw_width_targets.len() <= i {
-                raw_width_targets.push(0);
-            }
-            raw_width_targets[i] = raw_width_targets[i].max(raw_width);
-            record.push(f.value.clone());
-            cols.push(utf16_len(&stripped[..f.end]) as u32);
-            row_raw_widths.push(raw_width);
-        }
-        records.push(record);
-        end_cols.push(cols);
-        raw_widths.push(row_raw_widths);
+        line_ends.push(fields.len());
     }
-    let mut widths: Vec<usize> = Vec::new();
-    for rec in &records {
-        for (i, f) in rec.iter().enumerate() {
-            if widths.len() <= i {
-                widths.push(0);
-            }
-            widths[i] = widths[i].max(display_width(f));
-        }
-    }
-    let mut needs_align = needs_shrink;
-    if !needs_align {
-        'outer: for rec in &records {
-            for (i, f) in rec.iter().enumerate() {
-                let is_last = i + 1 == rec.len();
-                if !is_last && display_width(f) < widths[i] {
-                    needs_align = true;
-                    break 'outer;
-                }
-            }
-        }
-    }
-    DocAnalysis {
-        records,
-        end_cols,
-        raw_widths,
+    let mut analysis = DocAnalysis {
+        fields,
+        line_ends,
         raw_width_targets,
         widths,
         has_warnings,
-        needs_align,
+        needs_align: needs_shrink,
         needs_shrink,
+    };
+    if !analysis.needs_align {
+        analysis.needs_align = (0..analysis.line_count()).any(|l| {
+            let line = analysis.line(l);
+            let padded = line.len().saturating_sub(1); // last column isn't padded
+            line[..padded]
+                .iter()
+                .zip(&analysis.widths)
+                .any(|(f, &w)| (f.width as usize) < w)
+        });
     }
+    analysis
+}
+
+/// Rewrite every line of a warning-free document; `render` receives the
+/// CR/LF-stripped line and its field spans and appends the new line content.
+fn rewrite_lines(
+    text: &str,
+    dialect: Dialect,
+    mut render: impl FnMut(&str, &[RawField], &mut String),
+) -> String {
+    let mut out = String::with_capacity(text.len() + text.len() / 4);
+    let mut raw = Vec::new();
+    for (line, ending) in lines_with_endings(text) {
+        split_raw(line, dialect, &mut raw);
+        render(line, &raw, &mut out);
+        out.push_str(ending);
+    }
+    out
 }
 
 /// Align whole document with spaces (whitespace-align). Returns new text.
@@ -347,86 +462,42 @@ pub fn analyze_document(text: &str, dialect: Dialect) -> DocAnalysis {
 /// such input corrupts data (e.g. splits quoted commas on a second pass).
 /// Idempotent: `align(align(x)) == align(x)` for warning-free input.
 pub fn align_document(text: &str, dialect: Dialect) -> String {
-    if text.is_empty() {
-        return String::new();
-    }
     let analysis = analyze_document(text, dialect);
     if analysis.has_warnings {
         return text.to_string();
     }
-    let trailing_nl = text.ends_with('\n');
-    let mut raw_lines: Vec<&str> = text.split('\n').collect();
-    if trailing_nl && raw_lines.last() == Some(&"") {
-        raw_lines.pop();
-    }
-    debug_assert_eq!(raw_lines.len(), analysis.records.len());
-    let endings: Vec<&str> = raw_lines
-        .iter()
-        .map(|l| if l.ends_with('\r') { "\r\n" } else { "\n" })
-        .collect();
-    let delim = dialect.delimiter().to_string();
-    let mut out_lines = Vec::with_capacity(analysis.records.len());
-    for rec in &analysis.records {
-        let mut cells = Vec::with_capacity(rec.len());
-        for (i, f) in rec.iter().enumerate() {
-            let is_last = i + 1 == rec.len();
-            if is_last {
-                cells.push(f.clone()); // no trailing pad on last column
-            } else {
-                let pad = analysis.widths[i].saturating_sub(display_width(f));
-                let mut cell = String::with_capacity(f.len() + pad);
-                cell.push_str(f);
-                cell.push_str(&" ".repeat(pad));
-                cells.push(cell);
+    let delim = dialect.delimiter();
+    rewrite_lines(text, dialect, |line, fields, out| {
+        for (i, f) in fields.iter().enumerate() {
+            let value = &line[f.tstart..f.tend];
+            out.push_str(value);
+            if i + 1 < fields.len() {
+                // No trailing pad on the last column.
+                let pad = analysis.widths[i].saturating_sub(display_width(value));
+                out.extend(std::iter::repeat_n(' ', pad));
+                out.push(delim);
             }
         }
-        out_lines.push(cells.join(&delim));
-    }
-    let mut out = String::new();
-    for (i, l) in out_lines.iter().enumerate() {
-        out.push_str(l);
-        if i + 1 < out_lines.len() || trailing_nl {
-            out.push_str(endings.get(i).copied().unwrap_or("\n"));
-        }
-    }
-    out
+    })
 }
 
 /// Shrink: trim leading/trailing whitespace of every field.
 /// Returns `(new_text, changed)`. Returns `(input, false)` unchanged when any
 /// line has unbalanced quotes.
 pub fn shrink_document(text: &str, dialect: Dialect) -> (String, bool) {
-    if text.is_empty() {
-        return (String::new(), false);
-    }
     let analysis = analyze_document(text, dialect);
-    if analysis.has_warnings {
+    if analysis.has_warnings || !analysis.needs_shrink {
         return (text.to_string(), false);
     }
-    let trailing_nl = text.ends_with('\n');
-    let mut raw_lines: Vec<&str> = text.split('\n').collect();
-    if trailing_nl && raw_lines.last() == Some(&"") {
-        raw_lines.pop();
-    }
-    let endings: Vec<&str> = raw_lines
-        .iter()
-        .map(|l| if l.ends_with('\r') { "\r\n" } else { "\n" })
-        .collect();
-    let delim = dialect.delimiter().to_string();
-    let mut out_lines: Vec<String> = analysis
-        .records
-        .iter()
-        .map(|rec| rec.join(&delim))
-        .collect();
-    for (line, ending) in out_lines.iter_mut().zip(endings.iter()) {
-        if *ending == "\r\n" {
-            line.push('\r');
+    let delim = dialect.delimiter();
+    let out = rewrite_lines(text, dialect, |line, fields, out| {
+        for (i, f) in fields.iter().enumerate() {
+            if i > 0 {
+                out.push(delim);
+            }
+            out.push_str(&line[f.tstart..f.tend]);
         }
-    }
-    let mut out = out_lines.join("\n");
-    if trailing_nl {
-        out.push('\n');
-    }
+    });
     let changed = out != text;
     (out, changed)
 }
@@ -443,27 +514,21 @@ pub struct VirtualPad {
 /// analysis. Columns are raw-field ends in UTF-16 units, so hints land after
 /// existing whitespace instead of doubling it.
 pub fn pads_for_range(analysis: &DocAnalysis, start_line: u32, end_line: u32) -> Vec<VirtualPad> {
+    let lines = analysis.line_count();
+    let start = (start_line as usize).min(lines);
+    let end = (end_line as usize).saturating_add(1).min(lines);
     let mut pads = Vec::new();
-    for (lnum, rec) in analysis.records.iter().enumerate() {
-        let lnum_index = lnum;
-        let lnum = lnum as u32;
-        if lnum < start_line || lnum > end_line {
-            continue;
-        }
-        let raw_widths = &analysis.raw_widths[lnum_index];
-        debug_assert_eq!(raw_widths.len(), rec.len());
-        debug_assert_eq!(analysis.end_cols[lnum_index].len(), rec.len());
-        for (i, raw_width) in raw_widths.iter().enumerate() {
-            let is_last = i + 1 == rec.len();
-            if !is_last {
-                let pad = analysis.raw_width_targets[i].saturating_sub(*raw_width);
-                if pad > 0 {
-                    pads.push(VirtualPad {
-                        line: lnum,
-                        col: analysis.end_cols[lnum_index][i],
-                        spaces: pad,
-                    });
-                }
+    for lnum in start..end {
+        let fields = analysis.line(lnum);
+        let padded = fields.len().saturating_sub(1); // last column isn't padded
+        for (f, &target) in fields[..padded].iter().zip(&analysis.raw_width_targets) {
+            let pad = target.saturating_sub(f.raw_width as usize);
+            if pad > 0 {
+                pads.push(VirtualPad {
+                    line: lnum as u32,
+                    col: f.end_col,
+                    spaces: pad,
+                });
             }
         }
     }
@@ -634,7 +699,10 @@ mod tests {
     fn pads_anchor_after_existing_whitespace() {
         // `a  ,b`: hint must go after the raw field end (col 3), not after `a`.
         let analysis = analyze_document("a  ,b\ncccc,d\n", Dialect::Csv);
-        assert_eq!(analysis.raw_widths, vec![vec![3, 1], vec![4, 1]]);
+        let raw_widths: Vec<Vec<u32>> = (0..analysis.line_count())
+            .map(|l| analysis.line(l).iter().map(|f| f.raw_width).collect())
+            .collect();
+        assert_eq!(raw_widths, vec![vec![3, 1], vec![4, 1]]);
         assert_eq!(analysis.raw_width_targets, vec![4, 1]);
         let pads = pads_for_range(&analysis, 0, 0);
         assert_eq!(

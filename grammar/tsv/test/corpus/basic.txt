@@ -1,0 +1,207 @@
+==================
+Basic rows
+==================
+name	age	city
+John	30	New York
+
+---
+
+(csv
+  (row
+    (first)
+    (second)
+    (third))
+  (row
+    (first)
+    (second)
+    (third)))
+
+==================
+More than 7 columns cycles
+==================
+1	2	3	4	5	6	7	8	9	10	11	12	13	14	15	16
+
+---
+
+(csv
+  (row
+    (first)
+    (second)
+    (third)
+    (fourth)
+    (fifth)
+    (sixth)
+    (seventh)
+    (first)
+    (second)
+    (third)
+    (fourth)
+    (fifth)
+    (sixth)
+    (seventh)
+    (first)
+    (second)))
+
+==================
+Exactly 7 and 14 columns
+==================
+1	2	3	4	5	6	7
+1	2	3	4	5	6	7	8	9	10	11	12	13	14
+
+---
+
+(csv
+  (row
+    (first)
+    (second)
+    (third)
+    (fourth)
+    (fifth)
+    (sixth)
+    (seventh))
+  (row
+    (first)
+    (second)
+    (third)
+    (fourth)
+    (fifth)
+    (sixth)
+    (seventh)
+    (first)
+    (second)
+    (third)
+    (fourth)
+    (fifth)
+    (sixth)
+    (seventh)))
+
+==================
+Empty fields keep their column
+==================
+a		c	
+								x
+	
+
+---
+
+(csv
+  (row
+    (first)
+    (third))
+  (row
+    (second))
+  (row))
+
+==================
+Empty lines
+==================
+a	b
+
+
+c	d
+
+---
+
+(csv
+  (row
+    (first)
+    (second))
+  (row
+    (first)
+    (second)))
+
+==================
+CRLF line endings
+==================
+a	b
+c	d
+
+---
+
+(csv
+  (row
+    (first)
+    (second))
+  (row
+    (first)
+    (second)))
+
+==================
+No trailing newline
+==================
+a	b
+c	d
+---
+
+(csv
+  (row
+    (first)
+    (second))
+  (row
+    (first)
+    (second)))
+
+==================
+Quoted fields
+==================
+"a	b"	"say ""hi"""	""
+x	""	z
+
+---
+
+(csv
+  (row
+    (first)
+    (second)
+    (third))
+  (row
+    (first)
+    (second)
+    (third)))
+
+==================
+Whitespace-padded quoted fields (Align output)
+==================
+1   	  "Smith	 J"   	3
+100 	"Hamilton"     	5
+
+---
+
+(csv
+  (row
+    (first)
+    (second)
+    (third))
+  (row
+    (first)
+    (second)
+    (third)))
+
+==================
+Unclosed quote stays on its row
+==================
+x	"unclosed	y
+next	row
+
+---
+
+(csv
+  (row
+    (first)
+    (second)
+    (third))
+  (row
+    (first)
+    (second)))
+
+==================
+Stray quote inside an unquoted field
+==================
+ab"c	d
+
+---
+
+(csv
+  (row
+    (first)
+    (second)))

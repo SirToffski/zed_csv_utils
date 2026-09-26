@@ -64,8 +64,8 @@ runs fmt, clippy, tests, and the wasm build on Ubuntu, Windows, and macOS.
    `worktree.which("csv-lsp")`.
 2. Zed command palette: `zed: extensions` -> `Install Dev Extension` ->
    pick this directory.
-3. Open a `.csv` / `.tsv` file. Highlighting comes from the bundled
-   tree-sitter grammars (unchanged from upstream).
+3. Open a `.csv` / `.tsv` file. Highlighting comes from the tree-sitter
+   grammars in `grammar/` (see "Grammar" below).
 4. Align/Shrink appear as code actions (`editor: toggle code actions`) and —
    once *Code Actions* is enabled in the editor toolbar settings — as a
    toolbar button. Enable inlay hints in settings for the virtual-align view.
@@ -94,11 +94,15 @@ risking corruption.
 
 ## Layout
 
-- `extension.toml` — grammars (upstream pins) + `csv-lsp` language server for
+- `extension.toml` — grammar pins + `csv-lsp` language server for
   the 4 Rainbow languages (renamed with an `Align` suffix so they don't clash
   with the existing Rainbow CSV extension). Language `name`s must match
   `languages/*/config.toml`; `language_ids` fixes the LSP `languageId`
   explicitly instead of relying on display names.
+- `grammar/` — the Tree-sitter grammars (`csv`, `ssv`, `psv`, `tsv`), all
+  generated from `grammar/common/define-grammar.js`. `src/` holds the
+  generated parsers Zed compiles; `test/corpus/` the grammar tests. (Not
+  `grammars/`: that is where Zed checks grammars out during dev-install.)
 - `languages/` — copied from upstream (`csv,tsv,ssv,psv` + `highlights.scm`),
   names adjusted as above.
 - `crates/rainbow_csv_core` — dialect detection, span-tracked quoted/simple
@@ -124,12 +128,38 @@ risking corruption.
 ## Limits
 
 - Single-line records only; unbalanced-quote lines and multiline records are
-  refused, never reflowed.
+  refused, never reflowed. Highlighting is single-line as well: a quoted
+  field spanning lines is colored line by line.
 - No comment-prefix, dynamic separator, or whitespace-dialect support.
 - Virtual alignment uses display widths and does not model editor tab stops;
   CSV fields containing tabs may be visually misaligned.
 - All columns left-aligned (no decimal-point numeric alignment yet).
 - Non-UTF8 files: CLI decodes lossily; LSP path is UTF-8 (JSON).
+
+## Grammar
+
+Highlighting uses our own Tree-sitter grammar, tuned for large files (Zed
+parses the whole file, and extension grammars lex in WASM):
+
+- One token per field, quoted or not. Quoted fields used to be lexed one
+  character per tree node, which made quote-heavy files ~7x slower to parse.
+- Rows are built from 7-column groups via left recursion instead of `repeat`,
+  so edits reuse whole rows (repeat nodes are "fragile" in tree-sitter) and
+  the parse table is ~3x smaller.
+- Whitespace-padded quoted fields (Align's own output) and stray or unclosed
+  quotes parse without errors; typing a `"` only affects the current row.
+
+Node names (`row`, `first`..`seventh`) match upstream, so `highlights.scm` is
+unchanged. After editing `grammar/common/define-grammar.js`, regenerate and
+test every dialect with the tree-sitter CLI (needs Node.js; CI pins 0.25.8):
+
+```sh
+cd grammar/csv && npx tree-sitter-cli@0.25.8 generate && npx tree-sitter-cli@0.25.8 test
+```
+
+(repeat for `ssv`, `psv`, `tsv`), commit, then point the `commit` of all four
+`[grammars.*]` entries in `extension.toml` at that commit. Zed builds grammars
+from a Git commit, not from the working tree.
 
 ## Releasing
 
@@ -148,8 +178,8 @@ Actions tab.
 
 This extension combines work from two MIT-licensed projects:
 
-- Syntax highlighting, language configs (`languages/*/config.toml`,
-  `highlights.scm`), grammar pins, and `samples/` (except `vgsales.csv`)
+- Syntax highlighting queries, language configs (`languages/*/config.toml`,
+  `highlights.scm`), and `samples/` (except `vgsales.csv`)
   come from [Kalmaegi/zed-rainbow-csv](https://github.com/Kalmaegi/zed-rainbow-csv)
   (MIT, Copyright (c) 2024 Hans). Language display names were changed to
   avoid clashing with that extension in Zed.
@@ -159,11 +189,12 @@ This extension combines work from two MIT-licensed projects:
   splitter (`rbql_core/rbql-js/csv_utils.js`) and the column-stat / align /
   shrink / inlay-hint computation (`rainbow_utils.js`). No VS Code source
   files are vendored; the implementation here is a clean-room port.
-- At build time Zed fetches the Tree-sitter grammars from
+- The Tree-sitter grammars in `grammar/` were written for this extension,
+  following the structure and node naming of
   [coroa/rainbow-csv-tree-sitter](https://github.com/coroa/rainbow-csv-tree-sitter)
-  (pinned commit in `extension.toml`). Note: that repo declares no license;
-  it is referenced, not distributed, by this extension — same as upstream
-  `zed-rainbow-csv` does.
+  (which upstream `zed-rainbow-csv` uses), so the upstream highlight queries
+  work unchanged. The grammar rules themselves were rewritten for
+  performance (see "Grammar" above).
 
-Our own code (`crates/`, `src/`, `extension.toml` arrangement, tasks, docs)
+Our own code (`crates/`, `grammar/`, `src/`, `extension.toml` arrangement, tasks, docs)
 is MIT licensed, see `LICENSE`.

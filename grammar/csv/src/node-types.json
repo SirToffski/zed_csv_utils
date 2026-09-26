@@ -1,0 +1,89 @@
+[
+  {
+    "type": "csv",
+    "named": true,
+    "root": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "row",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "row",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "fifth",
+          "named": true
+        },
+        {
+          "type": "first",
+          "named": true
+        },
+        {
+          "type": "fourth",
+          "named": true
+        },
+        {
+          "type": "second",
+          "named": true
+        },
+        {
+          "type": "seventh",
+          "named": true
+        },
+        {
+          "type": "sixth",
+          "named": true
+        },
+        {
+          "type": "third",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": ",",
+    "named": false
+  },
+  {
+    "type": "fifth",
+    "named": true
+  },
+  {
+    "type": "first",
+    "named": true
+  },
+  {
+    "type": "fourth",
+    "named": true
+  },
+  {
+    "type": "second",
+    "named": true
+  },
+  {
+    "type": "seventh",
+    "named": true
+  },
+  {
+    "type": "sixth",
+    "named": true
+  },
+  {
+    "type": "third",
+    "named": true
+  }
+]
